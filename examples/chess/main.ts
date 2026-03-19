@@ -1,4 +1,4 @@
-import { createClient, RoomEvent, DisconnectReason } from "../../packages/client/src/index.ts";
+import { createClient, RoomEvent, DisconnectReason } from "../../packages/client/src/index";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
