@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edgplay — Chess smoke test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0f0f0f; color: #e0e0e0; padding: 2rem; }
+    h1 { color: #a0c4ff; margin-bottom: 1.5rem; }
+
+    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+    input  { background: #1e1e1e; color: #e0e0e0; border: 1px solid #333;
+             padding: 0.4rem 0.6rem; border-radius: 4px; font-family: monospace; font-size: 0.9rem; }
+    button { background: #a0c4ff; color: #0f0f0f; border: none; padding: 0.4rem 0.9rem;
+             border-radius: 4px; cursor: pointer; font-size: 0.9rem; font-weight: bold; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    button.danger { background: #ff6b6b; }
+
+    #status  { margin: 0.75rem 0; color: #ffd166; font-weight: bold; min-height: 1.2em; }
+    #board   { font-size: 2rem; margin: 1rem 0; letter-spacing: 0.2rem; min-height: 2rem; }
+
+    .move-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+
+    #log { background: #1a1a1a; padding: 0.8rem 1rem; border-radius: 6px;
+           height: 260px; overflow-y: auto; font-size: 0.8rem; line-height: 1.6; }
+    .log-in   { color: #69db7c; }
+    .log-out  { color: #a0c4ff; }
+    .log-err  { color: #ff6b6b; }
+    .log-sys  { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>♟ Edgplay Chess — smoke test</h1>
+
+  <div class="controls">
+    <input id="url"    value="http://localhost:8787" style="width:220px" placeholder="Worker URL" />
+    <input id="roomId" value="room-1"                style="width:110px" placeholder="Room ID" />
+    <button id="btnJoin">Join</button>
+    <button id="btnCreate">Create room</button>
+    <button id="btnLeave" disabled class="danger">Leave</button>
+  </div>
+
+  <div id="status">Not connected</div>
+  <div id="board">—</div>
+
+  <div class="move-row">
+    <input id="from" placeholder="from (e2)" style="width:90px" />
+    <span>→</span>
+    <input id="to"   placeholder="to (e4)"   style="width:90px" />
+    <button id="btnMove"   disabled>Move</button>
+    <button id="btnResign" disabled>Resign</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

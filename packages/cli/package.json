@@ -1,0 +1,14 @@
+{
+  "name": "edgplay-cli",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "edgplay": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
