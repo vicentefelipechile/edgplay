@@ -28,6 +28,24 @@ export interface EdgplayEnv {
   DB?: D1Database;
 }
 
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin":  "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Upgrade, Connection",
+};
+
+function withCors(res: Response): Response {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
+  return new Response(res.body, { status: res.status, headers });
+}
+
+function corsPreFlight(): Response {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
 // ─── Routing helpers ──────────────────────────────────────────────────────────
 
 /**
@@ -148,50 +166,41 @@ class EngineBuilder {
 
     return {
       async fetch(req: Request, env: EdgplayEnv, _ctx: ExecutionContext): Promise<Response> {
+        // ── CORS preflight ──────────────────────────────────────────────────
+        if (req.method === "OPTIONS") return corsPreFlight();
+
         const url = new URL(req.url);
         const segments = url.pathname.replace(/^\//, "").split("/");
-        // segments[0] = route type  ("room" | "lobby" | "profile")
-        // segments[1] = game name   (for room/lobby)
-        // segments[2] = room ID     (for room)
-
         const [route, param1, param2] = segments;
 
         // ── Health check ────────────────────────────────────────────────────
         if (!route || route === "") {
-          return json({ ok: true, games: [...rooms.keys()] });
+          return withCors(json({ ok: true, games: [...rooms.keys()] }));
         }
 
         // ── /room/:game/:roomId — WebSocket upgrade to GameRoom DO ──────────
         if (route === "room" && param1 && param2) {
           if (!rooms.has(param1)) {
-            return err(`Unknown game: "${param1}"`, 404);
+            return withCors(err(`Unknown game: "${param1}"`, 404));
           }
 
+          // WebSocket upgrades don't need CORS — they use the WS handshake
           if (req.headers.get("Upgrade") !== "websocket") {
-            return err("Expected WebSocket upgrade", 426);
+            return withCors(err("Expected WebSocket upgrade", 426));
           }
 
-          // TODO: run onConnect middleware once PlayerImpl is available
           void connectMiddleware;
-
-          // DO name format: "chess:sala-123"
-          // One unique DO instance per game+room combination
           return forwardToDO(env.GAME_ROOM, `${param1}:${param2}`, req);
         }
 
         // ── POST /room/:game — create a new room, return roomId ─────────────
         if (route === "room" && param1 && !param2 && req.method === "POST") {
           if (!rooms.has(param1)) {
-            return err(`Unknown game: "${param1}"`, 404);
+            return withCors(err(`Unknown game: "${param1}"`, 404));
           }
 
-          // Generate a short random room ID
           const roomId = crypto.randomUUID().slice(0, 8);
 
-          // Touch the DO so it initialises, passing game + room so the DO
-          // knows its own identity for lobby notifications.
-          // Non-fatal if it fails — the DO will still work, just without
-          // lobby notifications until the first WebSocket connect.
           try {
             const id = env.GAME_ROOM.idFromName(`${param1}:${roomId}`);
             const stub = env.GAME_ROOM.get(id);
@@ -203,30 +212,24 @@ class EngineBuilder {
             // non-fatal — room still works
           }
 
-          return json({ roomId });
+          return withCors(json({ roomId }));
         }
 
         // ── /lobby/:game — WebSocket upgrade to LobbyDO ─────────────────────
         if (route === "lobby" && param1) {
           if (!rooms.has(param1)) {
-            return err(`Unknown game: "${param1}"`, 404);
+            return withCors(err(`Unknown game: "${param1}"`, 404));
           }
 
           if (req.headers.get("Upgrade") === "websocket") {
-            // One LobbyDO per game type: "lobby:chess"
             return forwardToDO(env.LOBBY, `lobby:${param1}`, req);
           }
 
-          // HTTP GET /lobby/:game — return snapshot from KV cache if available
           if (req.method === "GET") {
             if (env.LOBBY_CACHE) {
               const cached = await env.LOBBY_CACHE.get(`lobby:${param1}`, "json");
-              if (cached) {
-                return json(cached, 200);
-              }
+              if (cached) return withCors(json(cached));
             }
-
-            // Fallback: fetch live from LobbyDO
             return forwardToDO(env.LOBBY, `lobby:${param1}`,
               new Request(`${url.origin}/list`));
           }
@@ -235,15 +238,12 @@ class EngineBuilder {
         // ── GET /profile/:playerId ───────────────────────────────────────────
         if (route === "profile" && param1 && req.method === "GET") {
           if (!env.DB) {
-            return err("Profile endpoint requires D1 — withDatabase() not configured", 404);
+            return withCors(err("Profile endpoint requires D1 — withDatabase() not configured", 404));
           }
-
-          // TODO: query D1 for public+profile fields only (never private)
-          // For now return 501 with a clear message
-          return err("GET /profile/:playerId — TODO: query D1", 501);
+          return withCors(err("GET /profile/:playerId — TODO: query D1", 501));
         }
 
-        return err("Not found", 404);
+        return withCors(err("Not found", 404));
       },
     };
   }

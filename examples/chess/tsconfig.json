@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src", "vite.config.ts", "client/main.ts"]
+  "include": ["src", "vite.config.ts", "main.ts"]
 }

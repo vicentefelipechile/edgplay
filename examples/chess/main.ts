@@ -13,12 +13,23 @@ function log(msg: string, cls = "log-sys") {
   el.scrollTop = el.scrollHeight;
 }
 
+function appendChat(from: string, text: string) {
+  const el = $("chatLog");
+  const line = document.createElement("div");
+  line.className = "chat-msg";
+  line.innerHTML = `<span class="chat-name ${from}">${from}</span><span>${text}</span>`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
 function setConnected(yes: boolean) {
-  ($("btnJoin")   as HTMLButtonElement).disabled = yes;
-  ($("btnCreate") as HTMLButtonElement).disabled = yes;
-  ($("btnLeave")  as HTMLButtonElement).disabled = !yes;
-  ($("btnMove")   as HTMLButtonElement).disabled = !yes;
-  ($("btnResign") as HTMLButtonElement).disabled = !yes;
+  ($("btnJoin")    as HTMLButtonElement).disabled = yes;
+  ($("btnCreate")  as HTMLButtonElement).disabled = yes;
+  ($("btnLeave")   as HTMLButtonElement).disabled = !yes;
+  ($("btnMove")    as HTMLButtonElement).disabled = !yes;
+  ($("btnResign")  as HTMLButtonElement).disabled = !yes;
+  ($("btnSend")    as HTMLButtonElement).disabled = !yes;
+  ($("chatInput")  as HTMLInputElement ).disabled = !yes;
 }
 
 function renderState(state: Record<string, unknown>) {
@@ -44,7 +55,11 @@ function attachRoom(r: typeof room) {
   room!.on(RoomEvent.PLAYER_LEAVE, (p) => log(`PLAYER_LEAVE: ${JSON.stringify(p)}`, "log-sys"));
   room!.on(RoomEvent.GAME_START,   ()  => log("GAME_START 🎮", "log-in"));
   room!.on(RoomEvent.GAME_OVER,    (d) => log(`GAME_OVER: ${JSON.stringify(d)}`, "log-in"));
-  room!.on(RoomEvent.CHAT,         (m: unknown) => log(`CHAT: ${(m as { text: string }).text}`, "log-sys"));
+
+  room!.on(RoomEvent.CHAT, (m: unknown) => {
+    const { from, text } = m as { from: string; text: string };
+    appendChat(from, text);
+  });
 
   room!.on(RoomEvent.RECONNECTING, ({ attempt, maxAttempts }) =>
     log(`Reconnecting… (${attempt}/${maxAttempts})`, "log-err"));
@@ -56,6 +71,7 @@ function attachRoom(r: typeof room) {
   room!.on(RoomEvent.DISCONNECTED, (reason) => {
     log(`Disconnected: ${reason}`, "log-err");
     $("status").textContent = `Disconnected (${reason as DisconnectReason})`;
+    $("board").textContent = "—";
     setConnected(false);
     room = null;
   });
@@ -67,7 +83,6 @@ $("btnJoin").addEventListener("click", () => {
   const workerUrl = ($("url")    as HTMLInputElement).value.trim();
   const roomId    = ($("roomId") as HTMLInputElement).value.trim();
   if (!roomId) return log("Enter a room ID", "log-err");
-
   log(`Joining ${workerUrl}/room/chess/${roomId}…`);
   attachRoom(createClient(workerUrl).game("chess").join(roomId));
 });
@@ -77,7 +92,6 @@ $("btnCreate").addEventListener("click", async () => {
   log(`Creating new room at ${workerUrl}…`);
   try {
     const r = await createClient(workerUrl).game("chess").create();
-    // Show the generated roomId in the input so the second player can copy it
     const roomId = r.url?.split("/").pop() ?? "?";
     ($("roomId") as HTMLInputElement).value = roomId;
     log(`Room created! ID: ${roomId} — share this with the other player`, "log-in");
@@ -102,4 +116,20 @@ $("btnMove").addEventListener("click", () => {
 $("btnResign").addEventListener("click", () => {
   log("→ resign", "log-out");
   room?.send("resign");
+});
+
+// ── chat ──────────────────────────────────────────────────────────────────────
+
+function sendChat() {
+  const input = $("chatInput") as HTMLInputElement;
+  const text = input.value.trim();
+  if (!text || !room) return;
+  room.send("chat", { text });
+  input.value = "";
+}
+
+$("btnSend").addEventListener("click", sendChat);
+
+$("chatInput").addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key === "Enter") sendChat();
 });

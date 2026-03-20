@@ -94,6 +94,11 @@ export class RoomConnection extends EventEmitter<RoomEventMap> {
   leave(): void {
     this._intentionalClose = true;
     this._cancelReconnect();
+    // Emit DISCONNECTED immediately — don't wait for the WS close event.
+    // This guarantees the caller always gets the event regardless of network
+    // conditions or server response time.
+    this._safeEmit(RoomEvent.DISCONNECTED, DisconnectReason.LEFT);
+    this.removeAllListeners();
     this.ws?.close(1000, "left");
   }
 

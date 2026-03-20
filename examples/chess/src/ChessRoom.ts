@@ -39,7 +39,6 @@ export class ChessRoom extends GameRoom<ChessState> {
   }
 
   onJoin(player: Player, _options: unknown): void {
-    // Assign color based on join order
     const color = this.players.size === 1 ? "white" : "black";
     player.data.color = color;
 
@@ -50,21 +49,23 @@ export class ChessRoom extends GameRoom<ChessState> {
       this.state.status = "playing";
       this.broadcast(GameEvent.GAME_START, null);
     }
-
-    // Send full state to the joining player
-    player.send(GameEvent.STATE_FULL, this.stateFor(player));
+    // Note: do NOT call player.send(STATE_FULL) here —
+    // the framework calls broadcastState() after onJoin automatically.
   }
 
   onLeave(player: Player): void {
     console.log(`[ChessRoom] ${player.id} left`);
 
     if (this.state.status === "playing") {
-      // Opponent wins on disconnect
       const winner = player.data.color === "white" ? "black" : "white";
-      this.state.status = "finished";
       this.state.winner = winner;
       this.broadcast(GameEvent.GAME_OVER, { winner, reason: "disconnect" });
     }
+
+    // Reset to waiting so the remaining player (or new players) can start fresh.
+    // The framework resets storage entirely when the last player leaves.
+    this.state.status = "waiting";
+    this.state.winner = null;
   }
 
   onDispose(): void {
@@ -152,6 +153,15 @@ export class ChessRoom extends GameRoom<ChessState> {
       this.state.status = "finished";
       this.state.winner = "draw";
       this.broadcast(GameEvent.GAME_OVER, { winner: "draw", reason: "agreement" });
+    },
+
+    chat: (player: Player, payload: { text: string }) => {
+      if (!payload?.text?.trim()) return;
+      const name = (player.data.color as string | undefined)?.toUpperCase() ?? "?";
+      this.broadcast(GameEvent.CHAT, {
+        from: name,
+        text: payload.text.trim().slice(0, 200), // 200 char limit
+      });
     },
   };
 }

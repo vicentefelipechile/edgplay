@@ -22,12 +22,17 @@ class MockWebSocket {
 // ─── Mock DurableObjectState ──────────────────────────────────────────────────
 
 function makeDOState(): DurableObjectState {
+  const store = new Map<string, unknown>();
   return {
     acceptWebSocket: vi.fn(),
     getWebSockets: vi.fn().mockReturnValue([]),
-    storage: {} as DurableObjectStorage,
+    storage: {
+      put: vi.fn().mockImplementation((key: string, val: unknown) => { store.set(key, val); return Promise.resolve(); }),
+      get: vi.fn().mockImplementation((key: string) => Promise.resolve(store.get(key))),
+      delete: vi.fn().mockResolvedValue(undefined),
+    } as unknown as DurableObjectStorage,
     id: {} as DurableObjectId,
-    blockConcurrencyWhile: vi.fn(),
+    blockConcurrencyWhile: vi.fn().mockImplementation((fn: () => Promise<void>) => fn()),
     waitUntil: vi.fn(),
     abort: vi.fn(),
   } as unknown as DurableObjectState;
@@ -84,9 +89,10 @@ function makeRoom() {
 
 async function connectPlayer(do_: GameRoomDO, _state: DurableObjectState) {
   const ws = new MockWebSocket() as unknown as WebSocket;
-  const req = new Request("https://example.com/room/test/room-1");
-  // Access the private method via any-cast — acceptable in test-only helpers
-  (do_ as unknown as { _onOpen: (ws: WebSocket, req: Request) => void })._onOpen(ws, req);
+  const req = new Request("https://example.com/room/chess/room-1");
+  // _onOpen is now async — await it so the player is fully registered
+  // before the test sends any messages
+  await (do_ as unknown as { _onOpen: (ws: WebSocket, req: Request) => Promise<void> })._onOpen(ws, req);
   return { ws: ws as unknown as MockWebSocket };
 }
 
@@ -135,13 +141,14 @@ describe("PING → PONG", () => {
     const { do_, state } = makeRoom();
     const { ws } = await connectPlayer(do_, state);
 
+    const sentBefore = ws.sent.length; // may include STATE_FULL from broadcastState
     const pingBuf = encode(GameEvent.PING, null);
     await do_.webSocketMessage(ws as unknown as WebSocket, pingBuf);
 
-    expect(ws.sent.length).toBe(1);
-    // Decode the response and verify it's a PONG
+    // One new frame was sent — and it's a PONG
+    expect(ws.sent.length).toBe(sentBefore + 1);
     const { decode } = await import("../src/protocol/index.js");
-    const msg = decode(ws.sent[0]);
+    const msg = decode(ws.sent[ws.sent.length - 1]);
     expect(msg?.type).toBe(GameEvent.PONG);
   });
 });

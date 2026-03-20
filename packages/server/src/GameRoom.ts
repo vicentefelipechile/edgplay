@@ -49,6 +49,20 @@ export abstract class GameRoom<TState extends object = Record<string, unknown>> 
 
   onCreate(_options: unknown): void {}
 
+  /**
+   * Called when a player successfully joins the room.
+   *
+   * At the time this runs, the player IS already in `this.players`,
+   * so `this.players.size` includes the incoming player.
+   *
+   * Use this to assign roles, check if the game should start, etc.
+   * Call `player.reject(reason)` inside this hook to kick the player
+   * out after join (e.g. if they fail a secondary validation).
+   *
+   * NOTE: do NOT call player.send(STATE_FULL) or broadcastState() here —
+   * the framework calls broadcastState() automatically after onJoin finishes,
+   * sending the current state to all connected players including the new one.
+   */
   onJoin(_player: Player, _options: unknown): void {}
 
   onLeave(_player: Player): void {}
@@ -80,7 +94,23 @@ export abstract class GameRoom<TState extends object = Record<string, unknown>> 
     return true;
   }
 
-  /** Whether a player is allowed to join */
+  /**
+   * Whether a player is allowed to join this room.
+   *
+   * Called by the framework BEFORE the player is added to `this.players`.
+   * At the time this runs, `this.players` contains only confirmed players
+   * (those who have already passed canJoin and onJoin without being rejected).
+   *
+   * The incoming player is NOT yet in the map — so to check if the room
+   * is full, compare against maxPlayers directly:
+   *
+   * @example
+   * canJoin(player) {
+   *   return this.players.size < this.maxPlayers;
+   * }
+   *
+   * Do NOT use `this.players.size + 1` — the +1 is implicit.
+   */
   canJoin(_player: Player): boolean {
     return this.players.size < this.maxPlayers;
   }
