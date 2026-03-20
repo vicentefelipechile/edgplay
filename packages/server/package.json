@@ -11,14 +11,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240725.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
-  },
-  "peerDependencies": {
-    "zod": "^3.0.0"
-  },
-  "peerDependenciesMeta": {
-    "zod": {
-      "optional": true
-    }
+    "vitest": "^4.1.0",
+    "zod": "^3.22.3"
   }
 }

@@ -2,13 +2,18 @@
   "name": "edgplay-cli",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "bin": {
-    "edgplay": "./src/index.ts"
+    "edgplay": "./bin/edgplay.mjs"
   },
   "scripts": {
     "build": "tsc"
   },
+  "dependencies": {
+    "tsx": "^4.0.0"
+  },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.5.0"
   }
 }

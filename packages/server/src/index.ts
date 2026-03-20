@@ -1,5 +1,7 @@
 export { createEngine } from "./createEngine.js";
 export type { EdgplayEnv } from "./createEngine.js";
+export { schemaToColumns, columnToSql } from "./persistence/schema.js";
+export type { ColumnDef, IdentitySchema } from "./persistence/schema.js";
 export { GameRoom } from "./GameRoom.js";
 export type { Player, PlayerIdentity } from "./Player.js";
 export { LobbyDO } from "./LobbyDO.js";
