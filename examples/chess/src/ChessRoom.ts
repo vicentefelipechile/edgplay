@@ -1,26 +1,34 @@
 import { GameRoom, GameEvent } from "edgplay";
-import type { Player } from "edgplay";
+import type { identitySchema } from "../edgplay.config.js";
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
 export interface ChessState {
-  /** FEN string representing the board */
   board: string;
   turn: "white" | "black";
   status: "waiting" | "playing" | "finished";
   winner: "white" | "black" | "draw" | null;
 }
 
+// ─── Per-session player data ──────────────────────────────────────────────────
+
+/**
+ * Data attached to each player for the duration of their session.
+ * Not persisted, not visible to other players.
+ */
+interface ChessPlayerData {
+  color: "white" | "black";
+}
+
 // ─── Developer-defined events (0x50–0xFF range) ───────────────────────────────
 
 export const ChessEvent = {
-  /** Server → client: invalid move attempted */
   INVALID_MOVE: 0x50,
 } as const;
 
 // ─── Room ─────────────────────────────────────────────────────────────────────
 
-export class ChessRoom extends GameRoom<ChessState> {
+export class ChessRoom extends GameRoom<ChessState, typeof identitySchema, ChessPlayerData> {
   maxPlayers = 2;
 
   initialState(): ChessState {
@@ -38,32 +46,28 @@ export class ChessRoom extends GameRoom<ChessState> {
     console.log("[ChessRoom] created");
   }
 
-  onJoin(player: Player, _options: unknown): void {
-    const color = this.players.size === 1 ? "white" : "black";
-    player.data.color = color;
+  onJoin(player: this["Player"], _options: unknown): void {
+    // player.data is typed as ChessPlayerData ✅
+    player.data.color = this.players.size === 1 ? "white" : "black";
 
-    console.log(`[ChessRoom] ${player.id} joined as ${color}`);
+    console.log(`[ChessRoom] ${player.identity.public.name} joined as ${player.data.color}`);
 
-    // Start game when both players are present
     if (this.players.size === 2) {
       this.state.status = "playing";
       this.broadcast(GameEvent.GAME_START, null);
     }
-    // Note: do NOT call player.send(STATE_FULL) here —
-    // the framework calls broadcastState() after onJoin automatically.
   }
 
-  onLeave(player: Player): void {
-    console.log(`[ChessRoom] ${player.id} left`);
+  onLeave(player: this["Player"]): void {
+    console.log(`[ChessRoom] ${player.identity.public.name} left`);
 
     if (this.state.status === "playing") {
+      // player.data.color is "white" | "black" — no cast needed ✅
       const winner = player.data.color === "white" ? "black" : "white";
       this.state.winner = winner;
       this.broadcast(GameEvent.GAME_OVER, { winner, reason: "disconnect" });
     }
 
-    // Reset to waiting so the remaining player (or new players) can start fresh.
-    // The framework resets storage entirely when the last player leaves.
     this.state.status = "waiting";
     this.state.winner = null;
   }
@@ -76,9 +80,9 @@ export class ChessRoom extends GameRoom<ChessState> {
 
   lobbyData() {
     return {
-      players: this.players.size,
+      players:    this.players.size,
       maxPlayers: this.maxPlayers,
-      status: this.state.status,
+      status:     this.state.status,
     };
   }
 
@@ -86,7 +90,7 @@ export class ChessRoom extends GameRoom<ChessState> {
     return this.state.status === "waiting";
   }
 
-  canJoin(player: Player): boolean {
+  canJoin(_player: this["Player"]): boolean {
     return this.players.size < this.maxPlayers && this.state.status === "waiting";
   }
 
@@ -104,13 +108,10 @@ export class ChessRoom extends GameRoom<ChessState> {
   // ─── Actions ───────────────────────────────────────────────────────────────
 
   actions = {
-    /**
-     * A chess move: { from: "e2", to: "e4" }
-     * NOTE: move validation is intentionally minimal for the PoC.
-     * The goal is to validate the framework, not implement a chess engine.
-     */
-    move: (player: Player, payload: { from: string; to: string }) => {
+    move: (player: this["Player"], payload: { from: string; to: string }) => {
       if (this.state.status !== "playing") return;
+
+      // player.data.color is "white" | "black" — direct comparison ✅
       if (this.state.turn !== player.data.color) {
         player.send(ChessEvent.INVALID_MOVE, { reason: "not your turn" });
         return;
@@ -119,48 +120,39 @@ export class ChessRoom extends GameRoom<ChessState> {
         player.send(ChessEvent.INVALID_MOVE, { reason: "missing from/to" });
         return;
       }
-
-      // TODO: validate the move against the board state (chess engine)
-      // For the PoC we trust the client and just record the move
-
-      // Apply move to FEN (simplified — just toggle turn for now)
       this.state.turn = this.state.turn === "white" ? "black" : "white";
-
-      // broadcastState is called automatically by the framework after actions
-      // (stateFor used per-player, but chess has no hidden state)
     },
 
-    resign: (player: Player, _payload: unknown) => {
+    resign: (player: this["Player"], _payload: unknown) => {
       if (this.state.status !== "playing") return;
-
+      // No cast — color is already "white" | "black" ✅
       const winner = player.data.color === "white" ? "black" : "white";
       this.state.status = "finished";
       this.state.winner = winner;
       this.broadcast(GameEvent.GAME_OVER, { winner, reason: "resign" });
     },
 
-    offerDraw: (player: Player, _payload: unknown) => {
+    offerDraw: (player: this["Player"], _payload: unknown) => {
       if (this.state.status !== "playing") return;
-      // Broadcast the draw offer to the opponent
       this.broadcastExcept(player.id, GameEvent.CHAT, {
         system: true,
-        text: `${player.data.color} offered a draw`,
+        text: `${player.identity.public.name} offered a draw`,
       });
     },
 
-    acceptDraw: (_player: Player, _payload: unknown) => {
+    acceptDraw: (_player: this["Player"], _payload: unknown) => {
       if (this.state.status !== "playing") return;
       this.state.status = "finished";
       this.state.winner = "draw";
       this.broadcast(GameEvent.GAME_OVER, { winner: "draw", reason: "agreement" });
     },
 
-    chat: (player: Player, payload: { text: string }) => {
+    chat: (player: this["Player"], payload: { text: string }) => {
       if (!payload?.text?.trim()) return;
-      const name = (player.data.color as string | undefined)?.toUpperCase() ?? "?";
+      const name = player.identity.public.name.toUpperCase();
       this.broadcast(GameEvent.CHAT, {
         from: name,
-        text: payload.text.trim().slice(0, 200), // 200 char limit
+        text: payload.text.trim().slice(0, 200),
       });
     },
   };

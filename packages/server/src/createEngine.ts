@@ -3,19 +3,26 @@ import type { Player } from "./Player.js";
 import type { RateLimitsConfig } from "./GameRoom.js";
 import { GameRoomDO } from "./GameRoomDO.js";
 import { LobbyDO } from "./LobbyDO.js";
+import { D1Adapter } from "./persistence/D1Adapter.js";
+import { schemaToColumns } from "./persistence/schema.js";
+import type { ColumnDef } from "./persistence/schema.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type GameRoomClass<TState extends object = any> = new () => GameRoomBase<TState>;
+type ConnectMiddleware = (player: Player<any>, req: Request) => void | Promise<void>;
 
-type ConnectMiddleware = (player: Player, req: Request) => void | Promise<void>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type GameRoomClass = new () => GameRoomBase<any, any, any>;
 
 interface EngineOptions {
   reconnectWindowMs?: number;
 }
 
 /**
- * The fixed env bindings contract.
+ * The required env bindings for Edgplay.
  * These names must match class_name / binding values in wrangler.jsonc.
+ *
+ * D1 is NOT included here — the developer passes their own D1 binding
+ * explicitly via withDatabase(env.MY_DB), choosing any binding name they want.
  */
 export interface EdgplayEnv {
   /** Durable Object namespace for game rooms */
@@ -24,8 +31,6 @@ export interface EdgplayEnv {
   LOBBY: DurableObjectNamespace;
   /** KV namespace for lobby snapshot cache (optional) */
   LOBBY_CACHE?: KVNamespace;
-  /** D1 database for player persistence (optional) */
-  DB?: D1Database;
 }
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
@@ -95,9 +100,19 @@ class EngineBuilder {
   private _rooms = new Map<string, GameRoomClass>();
   private _connectMiddleware: ConnectMiddleware | null = null;
   private _rateLimits: RateLimitsConfig | null = null;
-  private _cfRateLimit: { binding: unknown; config: unknown } | null = null;
-  private _db: unknown = null;
+  private _cfRateLimit: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getBinding: (env: any) => { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
+    key: (req: Request) => string;
+    onViolation?: "drop" | "reject";
+  } | null = null;
+  private _db: D1Database | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _dbFromEnv: ((env: any) => D1Database) | null = null;
   private _identitySchema: unknown = null;
+  private _columns: ColumnDef[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _zodSchemas: { public?: any; private?: any } = {};
   private _options: EngineOptions = {};
 
   // ─── Registration ─────────────────────────────────────────────────────────
@@ -116,13 +131,36 @@ class EngineBuilder {
 
   // ─── Persistence ─────────────────────────────────────────────────────────
 
-  withDatabase(db: unknown): this {
-    this._db = db;
+  /**
+   * Configure D1 persistence. Pass a function that selects the binding from env:
+   *
+   * @example
+   * createEngine().withDatabase(env => env.CHESS_DB)
+   *
+   * This way the developer chooses the binding name — the framework never
+   * assumes a fixed name like "DB".
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  withDatabase(selector: (env: any) => D1Database): this {
+    this._dbFromEnv = selector;
     return this;
   }
 
   defineIdentity(schema: unknown): this {
     this._identitySchema = schema;
+    // Compute SQL columns for the CLI
+    try {
+      this._columns = schemaToColumns(schema as { public: unknown; private: unknown });
+    } catch {
+      this._columns = [];
+    }
+    // Extract Zod schemas for runtime validation in PlayerImpl
+    // A Zod schema has a _def property — plain string objects don't
+    const s = schema as { public?: unknown; private?: unknown };
+    if (s?.public  && typeof s.public  === "object" && "_def" in (s.public  as object))
+      this._zodSchemas.public  = s.public;
+    if (s?.private && typeof s.private === "object" && "_def" in (s.private as object))
+      this._zodSchemas.private = s.private;
     return this;
   }
 
@@ -133,8 +171,27 @@ class EngineBuilder {
     return this;
   }
 
-  withCloudflareRateLimit(binding: unknown, config: unknown): this {
-    this._cfRateLimit = { binding, config };
+  /**
+   * Enable Cloudflare's native rate limiting binding (Layer 1 — connection level).
+   * Runs in the Worker before the request reaches the DO.
+   *
+   * @param getBinding  Function that selects the rate limit binding from env
+   * @param key         Function that derives the rate limit key from the request
+   *                    (default: client IP via CF-Connecting-IP header)
+   *
+   * @example
+   * createEngine()
+   *   .withCloudflareRateLimit(
+   *     env => env.RATE_LIMITER,
+   *     req => req.headers.get("CF-Connecting-IP") ?? "unknown"
+   *   )
+   */
+  withCloudflareRateLimit(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getBinding: (env: any) => { limit: (opts: { key: string }) => Promise<{ success: boolean }> },
+    key: (req: Request) => string = (req) => req.headers.get("CF-Connecting-IP") ?? "unknown"
+  ): this {
+    this._cfRateLimit = { getBinding, key };
     return this;
   }
 
@@ -160,14 +217,29 @@ class EngineBuilder {
    *   GET /                     → health check
    */
   get worker(): ExportedHandler<EdgplayEnv> {
-    // Capture builder state for use inside the handler
-    const rooms = this._rooms;
+    const rooms      = this._rooms;
     const connectMiddleware = this._connectMiddleware;
+    const columns    = this._columns;
+    const dbFromEnv  = this._dbFromEnv;
+    const cfRateLimit = this._cfRateLimit;
 
     return {
       async fetch(req: Request, env: EdgplayEnv, _ctx: ExecutionContext): Promise<Response> {
         // ── CORS preflight ──────────────────────────────────────────────────
         if (req.method === "OPTIONS") return corsPreFlight();
+
+        // ── Cloudflare Rate Limit (Layer 1 — connection level) ───────────────
+        if (cfRateLimit) {
+          const binding = cfRateLimit.getBinding(env);
+          const key     = cfRateLimit.key(req);
+          const result  = await binding.limit({ key });
+          if (!result.success) {
+            return withCors(err("Too many requests", 429));
+          }
+        }
+
+        // Resolve D1 binding from env using the developer's selector
+        const db = dbFromEnv ? dbFromEnv(env) : null;
 
         const url = new URL(req.url);
         const segments = url.pathname.replace(/^\//, "").split("/");
@@ -237,10 +309,18 @@ class EngineBuilder {
 
         // ── GET /profile/:playerId ───────────────────────────────────────────
         if (route === "profile" && param1 && req.method === "GET") {
-          if (!env.DB) {
-            return withCors(err("Profile endpoint requires D1 — withDatabase() not configured", 404));
+          if (!db) {
+            return withCors(err("Profile endpoint requires D1 — call withDatabase(env.YOUR_DB) in createEngine()", 404));
           }
-          return withCors(err("GET /profile/:playerId — TODO: query D1", 501));
+
+          const adapter = new D1Adapter(db, columns);
+          const profile = await adapter.getPublicProfile(param1);
+
+          if (!profile) {
+            return withCors(err(`Player '${param1}' not found`, 404));
+          }
+
+          return withCors(json(profile));
         }
 
         return withCors(err("Not found", 404));
@@ -262,15 +342,21 @@ class EngineBuilder {
    *   export const { GameRoom, LobbyDO } = engine.durableObjects;
    */
   get durableObjects() {
-    // If only one game is registered, bind that class directly.
-    // If multiple games are registered, the DO needs to look up the class
-    // from the instance name — that dispatch is handled inside GameRoomDO.
-    // For the PoC, single-game binding is sufficient.
-    const firstRoom = [...this._rooms.values()][0];
+    const firstRoom   = [...this._rooms.values()][0];
+    const columns     = this._columns;
+    const dbFromEnv   = this._dbFromEnv;
+    const middleware  = this._connectMiddleware;
+    const schemas     = this._zodSchemas;
+    const rateLimits  = this._rateLimits ?? undefined;
+
+    const makeAdapter = (env: EdgplayEnv): D1Adapter | null => {
+      const db = dbFromEnv ? dbFromEnv(env) : null;
+      return db ? new D1Adapter(db, columns) : null;
+    };
 
     const GameRoom = firstRoom
-      ? GameRoomDO.for(firstRoom)
-      : GameRoomDO; // fallback — returns 501 until a room is registered
+      ? GameRoomDO.for(firstRoom, makeAdapter, middleware, schemas, rateLimits)
+      : GameRoomDO;
 
     return { GameRoom, LobbyDO };
   }
